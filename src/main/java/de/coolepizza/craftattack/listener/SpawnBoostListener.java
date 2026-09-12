@@ -43,17 +43,21 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SpawnBoostListener implements Listener, Runnable {
 
     private final Plugin plugin;
-    private PluginConfig pluginConfig;
-    private MessageService messageService;
-    private World world;
+    private volatile PluginConfig pluginConfig;
+    private volatile MessageService messageService;
+    private volatile World world;
 
-    private final Set<UUID> flying = new HashSet<>();
-    private final Set<UUID> boosted = new HashSet<>();
+    private final Set<UUID> flying = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> boosted = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Long> launchTimes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> fallProtectionExpiries = new ConcurrentHashMap<>();
 
-    private String message;
-    private ActivationMode activationMode;
+    // Immutable atomic spatial cache for zero-allocation, thread-safe distance calculations
+    public record SpatialCache(double x, double y, double z, double radius, double radiusSquared) {}
+    private volatile SpatialCache spatialCache = new SpatialCache(0.0, 0.0, 0.0, 50.0, 2500.0);
+
+    private volatile String message;
+    private volatile ActivationMode activationMode;
     private BukkitTask tickerTask;
 
     /**
@@ -103,6 +107,7 @@ public class SpawnBoostListener implements Listener, Runnable {
         this.world = world;
         this.activationMode = this.pluginConfig.getActivationMode();
         this.message = this.pluginConfig.getLegacyMessage();
+        updateSpatialCache();
 
         if (startTask && this.plugin != null) {
             startTask();
@@ -142,6 +147,7 @@ public class SpawnBoostListener implements Listener, Runnable {
         this.messageService = (message != null)
                 ? MessageService.withCustomActionBarMessage(message)
                 : null;
+        updateSpatialCache();
 
         if (startTask && this.plugin != null) {
             startTask();
@@ -183,13 +189,37 @@ public class SpawnBoostListener implements Listener, Runnable {
 
     /**
      * Safely resets all flying players, cancels scheduled tasks, and clears tracking sets.
-     * Called during plugin disable.
+     * Called during plugin disable. Guarantees no vanilla flight exploit is left behind.
      */
     public synchronized void cleanup() {
         stopTask();
 
         for (UUID uuid : new HashSet<>(flying)) {
-            cleanupPlayer(uuid);
+            try {
+                Player player = Bukkit.getPlayer(uuid);
+                if (player != null && player.isOnline()) {
+                    player.setGliding(false);
+                    if (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.ADVENTURE) {
+                        player.setAllowFlight(false);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        // Revoke flight permission from any players in spawn to prevent permanent flight exploit on disable
+        World activeWorld = getWorld();
+        if (activeWorld != null) {
+            try {
+                for (Player player : activeWorld.getPlayers()) {
+                    if (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.ADVENTURE) {
+                        if (player.getAllowFlight() && isInSpawnRadius(player)) {
+                            player.setAllowFlight(false);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
         }
 
         flying.clear();
@@ -215,7 +245,10 @@ public class SpawnBoostListener implements Listener, Runnable {
             if (player != null && player.isOnline()) {
                 player.setGliding(false);
                 if (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.ADVENTURE) {
-                    player.setAllowFlight(isInSpawnRadius(player));
+                    boolean inSpawn = isInSpawnRadius(player);
+                    if (player.getAllowFlight() != inSpawn) {
+                        player.setAllowFlight(inSpawn);
+                    }
                 }
             }
         } catch (Exception ignored) {
@@ -239,7 +272,10 @@ public class SpawnBoostListener implements Listener, Runnable {
             try {
                 player.setGliding(false);
                 if (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.ADVENTURE) {
-                    player.setAllowFlight(isInSpawnRadius(player));
+                    boolean inSpawn = isInSpawnRadius(player);
+                    if (player.getAllowFlight() != inSpawn) {
+                        player.setAllowFlight(inSpawn);
+                    }
                 }
             } catch (Exception ignored) {
             }
@@ -258,17 +294,42 @@ public class SpawnBoostListener implements Listener, Runnable {
         if (messageService != null) {
             this.messageService = messageService;
         }
+
+        String configuredName = config != null ? config.getWorldName() : null;
         if (world != null) {
             this.world = world;
-        } else if (config != null) {
+        } else if (configuredName != null) {
             try {
-                World resolved = Bukkit.getWorld(config.getWorldName());
-                if (resolved != null) {
-                    this.world = resolved;
+                this.world = Bukkit.getWorld(configuredName);
+            } catch (Exception ignored) {
+                this.world = null;
+            }
+        } else {
+            this.world = null;
+        }
+        updateSpatialCache();
+    }
+
+    /**
+     * Recomputes cached spawn coordinates and radius squared into an immutable SpatialCache
+     * for high-performance, atomic spatial queries across all threads.
+     */
+    public void updateSpatialCache() {
+        World activeWorld = getWorld();
+        double x = 0.0, y = 0.0, z = 0.0;
+        if (activeWorld != null) {
+            try {
+                Location spawn = activeWorld.getSpawnLocation();
+                if (spawn != null) {
+                    x = spawn.getX();
+                    y = spawn.getY();
+                    z = spawn.getZ();
                 }
             } catch (Exception ignored) {
             }
         }
+        int radius = getSpawnRadius();
+        this.spatialCache = new SpatialCache(x, y, z, radius, (double) radius * radius);
     }
 
     @Override
@@ -278,27 +339,35 @@ public class SpawnBoostListener implements Listener, Runnable {
 
     /**
      * Periodic tick checking player flight conditions, spawn boundaries, and landings.
+     * Skips distance calculations for flying players and guards ability mutations
+     * to eliminate redundant packet spam and unnecessary state updates.
      */
     public void tick() {
         World activeWorld = getWorld();
         if (activeWorld == null) return;
 
-        long now = System.currentTimeMillis();
-        fallProtectionExpiries.entrySet().removeIf(entry -> entry.getValue() <= now);
+        // 1. Clean up expired fall protections only when active entries exist
+        if (!fallProtectionExpiries.isEmpty()) {
+            long now = System.currentTimeMillis();
+            fallProtectionExpiries.entrySet().removeIf(entry -> entry.getValue() <= now);
+        }
 
+        // 2. Iterate players in the active world
         for (Player player : activeWorld.getPlayers()) {
-            if (player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) {
+            GameMode gm = player.getGameMode();
+            if (gm != GameMode.SURVIVAL && gm != GameMode.ADVENTURE) {
                 continue;
             }
 
             UUID uuid = player.getUniqueId();
-            boolean inSpawn = isInSpawnRadius(player);
-
-            if (!flying.contains(uuid)) {
-                player.setAllowFlight(inSpawn);
-            } else {
+            if (flying.contains(uuid)) {
                 if (hasLanded(player)) {
                     handleLanding(player);
+                }
+            } else {
+                boolean inSpawn = isInSpawnRadius(player);
+                if (player.getAllowFlight() != inSpawn) {
+                    player.setAllowFlight(inSpawn);
                 }
             }
         }
@@ -363,11 +432,18 @@ public class SpawnBoostListener implements Listener, Runnable {
     public void onDoubleJump(PlayerToggleFlightEvent event) {
         Player player = event.getPlayer();
         if (player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) return;
+
+        UUID uuid = player.getUniqueId();
+        if (flying.contains(uuid)) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (!isInSpawnRadius(player)) return;
 
         event.setCancelled(true);
         player.setGliding(true);
-        UUID uuid = player.getUniqueId();
+        player.setAllowFlight(false);
         flying.add(uuid);
         launchTimes.put(uuid, System.currentTimeMillis());
 
@@ -377,13 +453,17 @@ public class SpawnBoostListener implements Listener, Runnable {
 
     @EventHandler
     public void onDamage(EntityDamageEvent event) {
-        if (event.getEntityType() == EntityType.PLAYER
-                && (event.getCause() == EntityDamageEvent.DamageCause.FALL
-                || event.getCause() == EntityDamageEvent.DamageCause.FLY_INTO_WALL)) {
-            UUID uuid = event.getEntity().getUniqueId();
-            if (flying.contains(uuid) || isFallProtected(uuid)) {
-                event.setCancelled(true);
-            }
+        EntityDamageEvent.DamageCause cause = event.getCause();
+        if (cause != EntityDamageEvent.DamageCause.FALL
+                && cause != EntityDamageEvent.DamageCause.FLY_INTO_WALL) {
+            return;
+        }
+        if (event.getEntityType() != EntityType.PLAYER) {
+            return;
+        }
+        UUID uuid = event.getEntity().getUniqueId();
+        if (flying.contains(uuid) || isFallProtected(uuid)) {
+            event.setCancelled(true);
         }
     }
 
@@ -415,10 +495,9 @@ public class SpawnBoostListener implements Listener, Runnable {
     public boolean triggerBoost(Player player) {
         if (player == null) return false;
         UUID uuid = player.getUniqueId();
-        if (!isBoostEnabled() || !flying.contains(uuid) || boosted.contains(uuid)) {
+        if (!isBoostEnabled() || !flying.contains(uuid) || !boosted.add(uuid)) {
             return false;
         }
-        boosted.add(uuid);
         player.setVelocity(player.getLocation().getDirection().multiply(getMultiplier()));
         return true;
     }
@@ -444,21 +523,41 @@ public class SpawnBoostListener implements Listener, Runnable {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
-        cleanupPlayer(event.getPlayer());
+        Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+        flying.remove(uuid);
+        boosted.remove(uuid);
+        launchTimes.remove(uuid);
+        fallProtectionExpiries.remove(uuid);
+
+        try {
+            if (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.ADVENTURE) {
+                player.setGliding(false);
+                player.setAllowFlight(false);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    @EventHandler
+    public void onDeath(org.bukkit.event.entity.PlayerDeathEvent event) {
+        cleanupPlayer(event.getEntity());
     }
 
     @EventHandler
     public void onTeleport(PlayerTeleportEvent event) {
         if (flying.contains(event.getPlayer().getUniqueId())) {
             cleanupPlayer(event.getPlayer());
+        } else if (event.getFrom().getWorld() != null && event.getTo() != null
+                && event.getTo().getWorld() != null
+                && !event.getFrom().getWorld().equals(event.getTo().getWorld())) {
+            cleanupPlayer(event.getPlayer());
         }
     }
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
-        if (flying.contains(event.getPlayer().getUniqueId())) {
-            cleanupPlayer(event.getPlayer());
-        }
+        cleanupPlayer(event.getPlayer());
     }
 
     @EventHandler
@@ -492,7 +591,8 @@ public class SpawnBoostListener implements Listener, Runnable {
     }
 
     /**
-     * Fast distance check using distanceSquared to avoid square root calculations.
+     * High-performance distance check using precomputed spatial coordinates and AABB bounding-box
+     * early-exit filtering, completely eliminating redundant Location allocations and square root calculations.
      *
      * @param player player to evaluate
      * @return true if player is within configured spawn radius, false otherwise
@@ -507,13 +607,23 @@ public class SpawnBoostListener implements Listener, Runnable {
             return false;
         }
 
-        Location spawnLocation = activeWorld.getSpawnLocation();
-        if (spawnLocation == null || spawnLocation.getWorld() == null || !activeWorld.equals(spawnLocation.getWorld())) {
-            return false;
+        SpatialCache cache = this.spatialCache;
+        if (cache == null || (cache.radiusSquared() == 0.0 && getSpawnRadius() > 0)) {
+            updateSpatialCache();
+            cache = this.spatialCache;
         }
 
-        double radius = getSpawnRadius();
-        return spawnLocation.distanceSquared(playerLoc) <= (radius * radius);
+        double r = cache.radius();
+        double dx = Math.abs(playerLoc.getX() - cache.x());
+        if (dx > r) return false;
+
+        double dz = Math.abs(playerLoc.getZ() - cache.z());
+        if (dz > r) return false;
+
+        double dy = Math.abs(playerLoc.getY() - cache.y());
+        if (dy > r) return false;
+
+        return (dx * dx + dy * dy + dz * dz) <= cache.radiusSquared();
     }
 
     public Plugin getPlugin() {
@@ -546,17 +656,25 @@ public class SpawnBoostListener implements Listener, Runnable {
 
     /**
      * Returns the configured world, attempting safe dynamic resolution if initially unloaded.
+     * Automatically invalidates stale world references and updates spatial cache upon resolution.
      *
      * @return World instance, or null if world is not loaded
      */
     public World getWorld() {
-        if (this.world != null) {
-            return this.world;
-        }
         String worldName = (pluginConfig != null) ? pluginConfig.getWorldName() : null;
+        World current = this.world;
+        if (current != null && (worldName == null || current.getName().equals(worldName))) {
+            return current;
+        }
+
+        this.world = null;
         if (worldName != null) {
             try {
-                this.world = Bukkit.getWorld(worldName);
+                World resolved = Bukkit.getWorld(worldName);
+                if (resolved != null) {
+                    this.world = resolved;
+                    updateSpatialCache();
+                }
             } catch (Exception ignored) {
             }
         }
@@ -600,7 +718,12 @@ public class SpawnBoostListener implements Listener, Runnable {
     public boolean isFallProtected(UUID uuid) {
         if (uuid == null) return false;
         Long expiry = fallProtectionExpiries.get(uuid);
-        return expiry != null && System.currentTimeMillis() < expiry;
+        if (expiry == null) return false;
+        if (System.currentTimeMillis() >= expiry) {
+            fallProtectionExpiries.remove(uuid);
+            return false;
+        }
+        return true;
     }
 
     public String getMessage() {

@@ -28,7 +28,7 @@ public class SpawnElytraCommand implements CommandExecutor, TabCompleter {
     public SpawnElytraCommand(CraftAttackSpawnBoost plugin) {
         this(plugin,
                 () -> plugin != null ? plugin.getMessageService() : null,
-                () -> plugin != null && plugin.reloadPlugin());
+                null);
     }
 
     public SpawnElytraCommand(Supplier<MessageService> messageServiceSupplier, BooleanSupplier reloadAction) {
@@ -55,16 +55,21 @@ public class SpawnElytraCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
-            boolean success = reloadAction != null ? reloadAction.getAsBoolean() : (plugin != null && plugin.reloadPlugin());
-            if (messageService != null) {
-                if (success) {
-                    messageService.sendPrefixedMessage(sender, MessageService.KEY_RELOAD_SUCCESS);
-                } else {
-                    sender.sendMessage("§cFehler beim Neuladen der Konfiguration.");
-                }
-            } else {
-                sender.sendMessage(success ? "§aReloaded successfully." : "§cFailed to reload.");
+            if (reloadAction != null) {
+                boolean success = reloadAction.getAsBoolean();
+                sendReloadFeedback(sender, messageService, success);
+                return true;
             }
+
+            if (plugin != null) {
+                plugin.reloadPluginAsync().thenAccept(success -> {
+                    MessageService updatedService = messageServiceSupplier != null ? messageServiceSupplier.get() : messageService;
+                    sendReloadFeedback(sender, updatedService, Boolean.TRUE.equals(success));
+                });
+                return true;
+            }
+
+            sendReloadFeedback(sender, messageService, false);
             return true;
         }
 
@@ -76,6 +81,8 @@ public class SpawnElytraCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private static final List<String> RELOAD_COMPLETIONS = List.of("reload");
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!hasPermission(sender)) {
@@ -83,9 +90,9 @@ public class SpawnElytraCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            String input = args[0].toLowerCase();
-            if ("reload".startsWith(input)) {
-                return List.of("reload");
+            String input = args[0];
+            if (input != null && input.regionMatches(true, 0, "reload", 0, input.length())) {
+                return RELOAD_COMPLETIONS;
             }
         }
         return Collections.emptyList();
@@ -93,5 +100,17 @@ public class SpawnElytraCommand implements CommandExecutor, TabCompleter {
 
     public boolean hasPermission(CommandSender sender) {
         return sender.hasPermission(PERMISSION_ADMIN) || sender.hasPermission(PERMISSION_ADMIN_ALIAS);
+    }
+
+    private void sendReloadFeedback(CommandSender sender, MessageService messageService, boolean success) {
+        if (messageService != null) {
+            if (success) {
+                messageService.sendPrefixedMessage(sender, MessageService.KEY_RELOAD_SUCCESS);
+            } else {
+                sender.sendMessage("§cFehler beim Neuladen der Konfiguration.");
+            }
+        } else {
+            sender.sendMessage(success ? "§aReloaded successfully." : "§cFailed to reload.");
+        }
     }
 }

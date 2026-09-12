@@ -56,6 +56,12 @@ public class MessageService {
     private ConfigurationSection languageConfig;
     private String customActionBarMessage;
 
+    // Precomputed Adventure components for zero-allocation, thread-safe access in hot paths
+    private volatile Component cachedPrefixComponent = Component.empty();
+    private volatile Component cachedBoostActionBarSwap = Component.empty();
+    private volatile Component cachedBoostActionBarSneak = Component.empty();
+    private volatile Map<String, Component> cachedPrefixedMessages = Collections.emptyMap();
+
     public MessageService(Plugin plugin) {
         this.plugin = plugin;
         this.languageFile = plugin != null ? new File(plugin.getDataFolder(), "language.yml") : null;
@@ -70,6 +76,7 @@ public class MessageService {
         this.logger = logger;
         this.miniMessage = MiniMessage.miniMessage();
         this.languageConfig = languageConfig;
+        updateCaches();
     }
 
     public MessageService(File languageFile, Logger logger) {
@@ -141,21 +148,50 @@ public class MessageService {
                 }
             }
 
-            // Apply bundled jar defaults as fallback if available
+            // Apply bundled jar defaults as fallback if available (even when plugin reference is absent)
+            InputStream stream = null;
             if (plugin != null) {
-                try (InputStream stream = plugin.getResource("language.yml")) {
-                    if (stream != null) {
-                        try (InputStreamReader reader = new InputStreamReader(stream, StandardCharsets.UTF_8)) {
-                            YamlConfiguration jarDefaults = YamlConfiguration.loadConfiguration(reader);
-                            yamlConfig.setDefaults(jarDefaults);
-                        }
-                    }
+                try {
+                    stream = plugin.getResource("language.yml");
+                } catch (Exception ignored) {
+                }
+            }
+            if (stream == null) {
+                try {
+                    stream = getClass().getClassLoader().getResourceAsStream("language.yml");
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (stream != null) {
+                try (InputStream is = stream;
+                     InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                    YamlConfiguration jarDefaults = YamlConfiguration.loadConfiguration(reader);
+                    yamlConfig.setDefaults(jarDefaults);
                 } catch (Exception ignored) {
                 }
             }
 
             this.languageConfig = yamlConfig;
         }
+        updateCaches();
+    }
+
+    /**
+     * Re-compiles and caches all static MiniMessage components for instant zero-allocation retrieval.
+     * Uses atomic reference swapping for full thread safety across asynchronous readers.
+     */
+    public void updateCaches() {
+        this.cachedPrefixComponent = parsePrefix();
+        String rawActionBar = getRawMessage(KEY_BOOST_ACTIONBAR);
+        this.cachedBoostActionBarSwap = parse(rawActionBar, ActivationMode.SWAP);
+        this.cachedBoostActionBarSneak = parse(rawActionBar, ActivationMode.SNEAK);
+
+        Map<String, Component> map = new HashMap<>();
+        for (String key : DEFAULT_MESSAGES.keySet()) {
+            map.put(key, buildPrefixedMessage(key));
+        }
+        this.cachedPrefixedMessages = Collections.unmodifiableMap(map);
     }
 
     /**
@@ -200,9 +236,13 @@ public class MessageService {
     }
 
     /**
-     * Parses the prefix as an Adventure {@link Component}.
+     * Returns the pre-compiled prefix as an Adventure {@link Component}.
      */
     public Component getPrefixComponent() {
+        return cachedPrefixComponent != null ? cachedPrefixComponent : parsePrefix();
+    }
+
+    private Component parsePrefix() {
         String rawPrefix = getRawPrefix();
         if (rawPrefix == null || rawPrefix.isEmpty()) {
             return Component.empty();
@@ -219,16 +259,17 @@ public class MessageService {
 
     /**
      * Builds the action bar component for the specified activation mode.
+     * Returns pre-compiled cached components for maximum efficiency during flight activation.
      *
      * @param mode activation mode
      * @return action bar Component
      */
     public Component getBoostActionBar(ActivationMode mode) {
-        String raw = getRawMessage(KEY_BOOST_ACTIONBAR);
-        if (raw == null || raw.isEmpty()) {
-            return Component.empty();
+        if (customActionBarMessage != null) {
+            return parse(customActionBarMessage, mode);
         }
-        return parse(raw, mode);
+        ActivationMode activeMode = mode != null ? mode : ActivationMode.SWAP;
+        return activeMode == ActivationMode.SNEAK ? cachedBoostActionBarSneak : cachedBoostActionBarSwap;
     }
 
     /**
@@ -269,14 +310,23 @@ public class MessageService {
 
     /**
      * Gets a localized component guaranteed to include the prefix.
-     * If the message template already contains "<prefix>", it is resolved.
-     * If not, the prefix is prepended.
+     * Utilizes pre-compiled static components when no custom resolvers are supplied.
      *
      * @param key                 message key
      * @param additionalResolvers optional additional MiniMessage tag resolvers
      * @return parsed Component with prefix
      */
     public Component getPrefixedMessage(String key, TagResolver... additionalResolvers) {
+        if (additionalResolvers == null || additionalResolvers.length == 0) {
+            Component cached = cachedPrefixedMessages.get(key);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        return buildPrefixedMessage(key, additionalResolvers);
+    }
+
+    private Component buildPrefixedMessage(String key, TagResolver... additionalResolvers) {
         String raw = getRawMessage(key);
         if (raw.contains("<prefix>") || raw.contains("%prefix%")) {
             return parse(raw, ActivationMode.SWAP, additionalResolvers);
@@ -369,6 +419,7 @@ public class MessageService {
 
     public void setCustomActionBarMessage(String customActionBarMessage) {
         this.customActionBarMessage = customActionBarMessage;
+        updateCaches();
     }
 
     public String getCustomActionBarMessage() {
@@ -381,5 +432,6 @@ public class MessageService {
 
     public void setLanguageConfig(ConfigurationSection languageConfig) {
         this.languageConfig = languageConfig;
+        updateCaches();
     }
 }

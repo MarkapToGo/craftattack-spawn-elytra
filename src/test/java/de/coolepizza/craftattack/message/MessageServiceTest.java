@@ -274,6 +274,28 @@ class MessageServiceTest {
         assertTrue(component.toString().contains("SpawnElytra"));
     }
 
+    @Test
+    @DisplayName("Precomputed components return identical cached references on consecutive calls")
+    void testPrecomputedComponentsCached() {
+        MessageService service = MessageService.defaults();
+
+        Component prefix1 = service.getPrefixComponent();
+        Component prefix2 = service.getPrefixComponent();
+        assertSame(prefix1, prefix2, "Prefix component should return cached instance");
+
+        Component boostSwap1 = service.getBoostActionBar(ActivationMode.SWAP);
+        Component boostSwap2 = service.getBoostActionBar(ActivationMode.SWAP);
+        assertSame(boostSwap1, boostSwap2, "SWAP action bar component should return cached instance");
+
+        Component boostSneak1 = service.getBoostActionBar(ActivationMode.SNEAK);
+        Component boostSneak2 = service.getBoostActionBar(ActivationMode.SNEAK);
+        assertSame(boostSneak1, boostSneak2, "SNEAK action bar component should return cached instance");
+
+        Component reloadMsg1 = service.getPrefixedMessage(MessageService.KEY_RELOAD_SUCCESS);
+        Component reloadMsg2 = service.getPrefixedMessage(MessageService.KEY_RELOAD_SUCCESS);
+        assertSame(reloadMsg1, reloadMsg2, "Prefixed reload message should return cached instance");
+    }
+
     private static class TestLogHandler extends Handler {
         private final List<LogRecord> records = new ArrayList<>();
 

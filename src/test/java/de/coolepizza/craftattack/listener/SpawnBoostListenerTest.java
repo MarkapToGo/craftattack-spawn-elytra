@@ -884,4 +884,54 @@ class SpawnBoostListenerTest {
         listener.onGameModeChange(toSpectator);
         assertFalse(listener.isFlying(player));
     }
+
+    @Test
+    @DisplayName("cleanup() revokes allowFlight from both flying players and standing spawn players on disable")
+    void testCleanupRevokesAllowFlightOnDisable() {
+        SpawnBoostListener listener = createListener(ActivationMode.SWAP, true);
+
+        // Player is inside spawn radius and granted flight
+        playerAllowFlight.set(true);
+        assertTrue(playerAllowFlight.get());
+
+        // Flying player in spawn
+        listener.getFlying().add(player.getUniqueId());
+
+        // Second player in spawn who is not flying
+        AtomicBoolean secondAllowFlight = new AtomicBoolean(true);
+        Player standingPlayer = createPlayer(
+                new Location(world, 0, 70, 0),
+                new AtomicReference<>(null),
+                UUID.randomUUID(),
+                new AtomicBoolean(false),
+                secondAllowFlight,
+                new AtomicBoolean(true),
+                new AtomicBoolean(false),
+                new AtomicBoolean(false),
+                new AtomicReference<>(GameMode.SURVIVAL),
+                new AtomicReference<>(null)
+        );
+        worldPlayers.get().add(standingPlayer);
+
+        listener.cleanup();
+
+        assertFalse(playerAllowFlight.get(), "Flying player must have allowFlight revoked on disable");
+        assertFalse(secondAllowFlight.get(), "Standing spawn player must have allowFlight revoked on disable");
+        assertTrue(listener.getFlying().isEmpty());
+    }
+
+    @Test
+    @DisplayName("isFallProtected lazily prunes expired entries on access")
+    void testLazyFallProtectionPruning() throws InterruptedException {
+        SpawnBoostListener listener = createListener(ActivationMode.SWAP, true);
+        listener.getFlying().add(player.getUniqueId());
+
+        listener.handleLanding(player);
+        assertTrue(listener.isFallProtected(player.getUniqueId()), "Player should be protected immediately after landing");
+
+        // Wait for the 1000ms protection window to expire
+        Thread.sleep(1050L);
+
+        assertFalse(listener.isFallProtected(player.getUniqueId()), "Protection should be expired");
+    }
 }
