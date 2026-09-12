@@ -1,7 +1,7 @@
 main: de.coolepizza.craftattack.CraftAttackSpawnBoost
-version: 1.2.1
+version: '${version}'
 api-version: '26.2'
-author: CoolePizza
+author: CoolePizza & MarkapToGo
 name: CraftAttackSpawnBoost
 description: "CraftAttack Spawn Elytra boost plugin with customizable activation modes and localization"
 

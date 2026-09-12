@@ -3,7 +3,10 @@ plugins {
 }
 
 group = "de.coolepizza"
-version = "1.2.1"
+val baseVersion = "1.2.2"
+val isTagRelease = System.getenv("GITHUB_REF_TYPE") == "tag" || project.hasProperty("release")
+val buildNumber = System.getenv("GITHUB_RUN_NUMBER") ?: project.findProperty("buildNumber") as String?
+version = if (buildNumber != null && !isTagRelease) "$baseVersion-b$buildNumber" else baseVersion
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(25))
@@ -23,6 +26,15 @@ dependencies {
 
 tasks.withType<JavaCompile> {
     options.compilerArgs.add("-Xlint:deprecation")
+}
+
+tasks.processResources {
+    val props = mapOf("version" to project.version.toString())
+    inputs.properties(props)
+    filteringCharset = "UTF-8"
+    filesMatching("plugin.yml") {
+        expand(props)
+    }
 }
 
 tasks.test {
