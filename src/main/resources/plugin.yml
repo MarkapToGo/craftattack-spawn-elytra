@@ -1,5 +1,23 @@
 main: de.coolepizza.craftattack.CraftAttackSpawnBoost
-version: 1.1
-api-version: 1.17
+version: 1.2.1
+api-version: '26.2'
 author: CoolePizza
 name: CraftAttackSpawnBoost
+description: "CraftAttack Spawn Elytra boost plugin with customizable activation modes and localization"
+
+commands:
+  spawnelytra:
+    description: "Manage CraftAttack Spawn Elytra plugin"
+    permission: craftattack.spawnelytra.admin
+    usage: "/spawnelytra reload"
+    aliases:
+      - spawnboost
+      - craftattackspawnboost
+
+permissions:
+  craftattack.spawnelytra.admin:
+    description: "Allows reloading CraftAttack Spawn Elytra configuration and language."
+    default: op
+  spawnelytra.admin:
+    description: "Alias for craftattack.spawnelytra.admin"
+    default: op

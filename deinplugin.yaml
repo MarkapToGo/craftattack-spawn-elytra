@@ -4,22 +4,23 @@ name: Spawn Elytra
 authors:
   - cedricmkl
 supportedPlatforms:
-  - spigot
-supportedGameVersions: ^1.17
+  - paper
+supportedGameVersions: ^26.2
 category: misc
-introduction: Ermöglicht das Nutzen einer temporären Elytra
+introduction: Ermöglicht das Nutzen einer temporären Elytra im Spawn-Bereich (Paper 26.2)
 description: |
-  Das Plugin ermöglicht durch einen Doppelsprung in einem Spawn-Bereich das Nutzen einer temporären Elytra. 
-  Mit der Taste um die Hände zu wechseln kann man einen Boost verwenden.
+  Das Plugin ermöglicht durch einen Doppelsprung in einem Spawn-Bereich das Nutzen einer temporären Elytra (bekannt aus CraftAttack). 
+  Der Boost kann wahlweise per Handwechsel-Taste (SWAP, Standard: F) oder beim Ducken (SNEAK, Shift) in Blickrichtung ausgelöst werden.
 installation:
   de: |
     - Herunterladen der Plugin-Datei
-    - Ablegen der Datei im Plugins-Ordner
+    - Ablegen der Datei im plugins-Ordner
     - Server neustarten
     - In der Datei config.yml einstellen:
-        - spawnRadius: Den Radius um den Worldspawn, wo die Elytra aktiviert werden soll
-        - multiplyValue: Stärke des Boostes
-        - boostEnabled: Ob der Boost eingeschaltet sein soll
-        - world: Die Welt, in der man die Elytra aktivieren kann
+        - activation.mode: Aktivierungsmodus (SWAP oder SNEAK)
+        - elytra.spawn-radius: Radius um den Worldspawn, wo die Elytra aktiviert werden soll
+        - elytra.multiplier: Multiplikator für die Boost-Geschwindigkeit
+        - elytra.boost-enabled: Ob der Boost eingeschaltet sein soll
+        - elytra.world: Die Welt, in der man die Elytra aktivieren kann
 videoSources:
   - https://www.youtube.com/watch?v=S9f_mFiYT50

@@ -1,5 +1,22 @@
-spawnRadius: 50
-multiplyValue: 5
-boostEnabled: true
-world: world
-message: "Drücke %key% um dich zu Boosten."
+# ===================================================
+# CraftAttack Spawn Elytra Configuration
+# ===================================================
+
+activation:
+  # Available modes:
+  # SWAP  - Activate boost using the player's offhand swap key (default: F)
+  # SNEAK - Activate boost when the player starts sneaking (Shift)
+  mode: SWAP
+
+elytra:
+  # Radius in blocks around the world spawn where Elytra gliding is enabled
+  spawn-radius: 50
+
+  # Velocity multiplier applied when boosting
+  multiplier: 5.0
+
+  # Whether the boost feature is enabled
+  boost-enabled: true
+
+  # World name where the spawn elytra is active
+  world: "world"

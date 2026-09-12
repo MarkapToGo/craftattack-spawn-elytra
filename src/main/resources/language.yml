@@ -1,0 +1,26 @@
+# ===================================================
+# CraftAttack Spawn Elytra - Language Configuration
+# ===================================================
+# Supports Adventure MiniMessage formatting (<gray>, <yellow>, <bold>, <gradient>, etc.)
+# Documentation: https://docs.advntr.dev/minimessage/format.html
+#
+# Available placeholders:
+#   <prefix>         - Inserts the prefix defined below
+#   <key>            - Inserts the keybind component based on the active boost mode (swap / sneak)
+#   <key:identifier> - Inserts an explicit Minecraft keybind component (e.g. <key:key.swapOffhand>)
+
+# Prefix prepended to command feedback and announcements
+prefix: "<gray>[<aqua>SpawnElytra<gray>] "
+
+messages:
+  # Action bar message displayed when a player double-jumps to activate spawn glide
+  boost-actionbar: "<gray>Drücke <yellow><key></yellow> um dich zu boosten."
+
+  # Sent to the command sender when configuration and language files are successfully reloaded
+  reload-success: "<prefix><green>Konfiguration und Sprache wurden erfolgreich neu geladen."
+
+  # Sent when a player tries to execute an administrative command without permission
+  no-permission: "<prefix><red>Dazu hast du keine Berechtigung."
+
+  # Sent when invalid command arguments are supplied
+  command-usage: "<prefix><yellow>Verwendung: <white>/spawnelytra reload"
